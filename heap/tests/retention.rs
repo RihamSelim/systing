@@ -125,6 +125,54 @@ fn latest_per_pid_is_loaded_and_older_dumps_deleted() {
     assert_eq!(names(&d.join("out")), vec!["heap.duckdb"]);
 }
 
+/// jemalloc writes a dump in place, so a process killed during one leaves a
+/// file that stops early. Wherever it stops, the file is not the latest
+/// snapshot: the newest whole one is loaded, and only dumps older than that
+/// one go.
+#[test]
+fn a_dump_cut_short_is_not_the_latest() {
+    let whole = "heap_v2/524288\n  t*: 2: 300 [0: 0]\n\
+                 @ 0x10\n  t*: 1: 100 [0: 0]\n  t0: 1: 100 [0: 0]\n\
+                 @ 0x20\n  t*: 1: 200 [0: 0]\n  t0: 1: 200 [0: 0]\n\
+                 \nMAPPED_LIBRARIES:\n\
+                 00001000-00002000 r-xp 00000000 00:2a 7 /usr/bin/app\n\
+                 00002000-00003000 r--p 00001000 00:2a 7 /usr/bin/app\n";
+    let cuts = [
+        ("inside a stack", whole.find("  t*: 1: 200").unwrap()),
+        ("between two stacks", whole.find("@ 0x20").unwrap()),
+        ("inside the maps", whole.len() - 20),
+    ];
+    for (what, cut) in cuts {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write(d, "jeprof.20.0.i0.heap", &dump(100));
+        write(d, "jeprof.20.1.i1.heap", &dump(200));
+        write(d, "jeprof.20.2.i2.heap", &whole[..cut]);
+        let out_dir = tempfile::tempdir().unwrap();
+        let db = out_dir.path().join("heap.duckdb");
+
+        let out = Command::new(BIN)
+            .arg(d.join("jeprof"))
+            .arg("-o")
+            .arg(&db)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "cut {what}: {stderr}");
+
+        assert_eq!(loaded(&db), vec![(20, 1, 200)], "cut {what}");
+        assert_eq!(
+            names(d),
+            vec!["jeprof.20.1.i1.heap", "jeprof.20.2.i2.heap"],
+            "cut {what}"
+        );
+        assert!(
+            stderr.contains("kept, did not parse:") && stderr.contains("jeprof.20.2.i2.heap"),
+            "cut {what}: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn keep_all_loads_everything_and_deletes_nothing() {
     let (dir, _elsewhere) = setup();

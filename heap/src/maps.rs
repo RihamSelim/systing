@@ -45,8 +45,7 @@ pub struct Maps {
 }
 
 impl Maps {
-    /// Parse maps text. Lines that do not parse are skipped: a dump written
-    /// by a crashing process may end mid-line.
+    /// Parse maps text. Lines that do not parse are skipped.
     pub fn parse(text: &str) -> Maps {
         let mut mappings: Vec<Mapping> = text.lines().filter_map(parse_line).collect();
         mappings.sort_by_key(|m| m.start);

@@ -117,7 +117,7 @@ pub fn parse(text: &str) -> Result<Snapshot> {
     let mut samples: Vec<Sample> = Vec::new();
     // The stack whose t* line is still to come.
     let mut pending: Option<Vec<u64>> = None;
-    let mut maps = Maps::default();
+    let mut has_maps = false;
 
     for (i, raw) in lines.by_ref().enumerate() {
         let line = raw.trim();
@@ -126,6 +126,7 @@ pub fn parse(text: &str) -> Result<Snapshot> {
             continue;
         }
         if line == "MAPPED_LIBRARIES:" {
+            has_maps = true;
             break;
         }
         if let Some(rest) = line.strip_prefix('@') {
@@ -168,10 +169,20 @@ pub fn parse(text: &str) -> Result<Snapshot> {
     if pending.is_some() {
         bail!("the last stack has no t* line (truncated file?)");
     }
-    let rest: Vec<&str> = lines.collect();
-    if !rest.is_empty() {
-        maps = Maps::parse(&rest.join("\n"));
+    // jemalloc writes a dump in place, the maps last, so a process killed
+    // during one leaves a file that stops early. Every stack in it can be
+    // whole, and it must still not pass for the process's latest snapshot.
+    if !has_maps {
+        bail!(
+            "no MAPPED_LIBRARIES section (truncated file, or a process that \
+             could not read its /proc maps)"
+        );
     }
+    if !text.ends_with('\n') {
+        bail!("the last line is cut short (truncated file?)");
+    }
+    let rest: Vec<&str> = lines.collect();
+    let maps = Maps::parse(&rest.join("\n"));
     // The header's totals are read to keep the grammar, not kept: they are
     // the sum of every stack's pair, and scaling a sum under-counts small
     // objects (see Sample::estimates).
@@ -242,7 +253,8 @@ MAPPED_LIBRARIES:
     #[test]
     fn named_threads_do_not_break_the_header() {
         let dump = "heap_v2/4096\n  t*: 2: 200 [0: 0]\n  t0: 1: 100 [0: 0] worker-1\n  \
-                    t3: 1: 100 [0: 0] io pool 2\n@ 0x1\n  t*: 2: 200 [0: 0]\n  t0: 1: 100 [0: 0]\n";
+                    t3: 1: 100 [0: 0] io pool 2\n@ 0x1\n  t*: 2: 200 [0: 0]\n  t0: 1: 100 [0: 0]\n\
+                    \nMAPPED_LIBRARIES:\n";
         let s = parse(dump).unwrap();
         assert_eq!(s.samples.len(), 1);
     }
@@ -256,6 +268,28 @@ MAPPED_LIBRARIES:
     #[test]
     fn a_truncated_stack_is_an_error() {
         assert!(parse("heap_v2/4096\n  t*: 1: 1 [0: 0]\n@ 0x1 0x2\n").is_err());
+    }
+
+    #[test]
+    fn a_dump_cut_between_two_stacks_is_an_error() {
+        // Every stack it has is whole: only the missing maps give it away.
+        let cut = DUMP.find("@ 0x7f4bc7446b86 0x56326ffdd1e1").unwrap();
+        let err = parse(&DUMP[..cut]).unwrap_err();
+        assert!(err.to_string().contains("no MAPPED_LIBRARIES"), "{err}");
+    }
+
+    #[test]
+    fn a_dump_cut_inside_its_maps_is_an_error() {
+        let err = parse(&DUMP[..DUMP.len() - 20]).unwrap_err();
+        assert!(err.to_string().contains("cut short"), "{err}");
+    }
+
+    #[test]
+    fn a_dump_with_empty_maps_parses() {
+        let end = DUMP.find("56326ffdc000-").unwrap();
+        let s = parse(&DUMP[..end]).unwrap();
+        assert_eq!(s.samples.len(), 2);
+        assert!(s.maps.mappings().is_empty());
     }
 
     #[test]

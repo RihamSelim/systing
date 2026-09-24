@@ -72,7 +72,8 @@ Users usually care about the current state, so with a prefix input the tool keep
 - **Which files.** Files directly in the prefix's directory whose names start with the prefix's file name. Subdirectories are never read.
 - **Which process.** The pid is the number jemalloc writes right after the prefix (`<prefix>.<pid>.<seq>...`). Nothing after the sequence number is examined.
 - **Which snapshot.** The highest sequence number for that pid. If a name has no sequence number, the file's modification time decides.
-- **Loaded.** Each pid's latest snapshot. If the latest does not parse (jemalloc may still be writing it), the newest one that parses is loaded, and the unparsed newer file is kept. A Perfetto output loads the older ones too (see Perfetto output).
+- **Loaded.** Each pid's latest snapshot. If the latest does not parse, the newest one that parses is loaded, and the unparsed newer file is kept. A Perfetto output loads the older ones too (see Perfetto output).
+- **Unfinished dumps.** jemalloc writes a dump in place, so a file can stop early: jemalloc is still writing it, or the process was killed during the dump. A dump parses only if it has its `MAPPED_LIBRARIES:` section, which jemalloc writes last, and its last line is whole. A file cut exactly between two lines of that section still passes, with the addresses of the missing mappings unresolved. A process that cannot read its `/proc` maps writes no such section, so its dumps are never loaded.
 - **Deleted.** That pid's files older than the loaded one, and only after the new output is in place and synced. Each deletion is printed. With a DuckDB output their contents are in no database: only the latest is loaded.
 - **Kept.** The loaded file itself, and any newer unparsed file.
 
